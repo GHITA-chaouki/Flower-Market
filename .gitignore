@@ -39,3 +39,24 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# .NET / C#
+backend/bin/
+backend/obj/
+backend/TestResults/
+backend/nupkg/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.swp
+*.bak
+*.log
+
+# User Secrets & Local Settings
+backend/appsettings.Local.json
+backend/Auth/Secrets/
