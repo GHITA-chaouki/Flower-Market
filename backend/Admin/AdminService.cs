@@ -1,4 +1,5 @@
-﻿using backend.Models;
+﻿// Provides aggregated data for admin dashboard
+using backend.Models;
 using backend.Admin.Dto;
 using backend.Data;
 using Microsoft.AspNetCore.Identity;

@@ -1,4 +1,6 @@
-﻿namespace backend.Admin.Dto
+﻿// DTO used for admin dashboard statistics
+
+namespace backend.Admin.Dto
 {
     public class AdminStatsDto
     {

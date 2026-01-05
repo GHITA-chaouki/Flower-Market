@@ -1,3 +1,4 @@
+// Admin dashboard main entry – statistics and KPIs
 import React, { useEffect, useState, useRef } from "react";
 import {
   View,
