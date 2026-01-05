@@ -1,3 +1,4 @@
+// Authentication
 import {
   View,
   Text,
@@ -117,7 +118,7 @@ export default function Login() {
         role = role.trim();
       }
 
-      // Debug: Log the role to verify it's correct
+      // Debug: Log the role to verify it's correct!!
       console.log("=== DEBUG LOGIN ===");
       console.log("Full user data:", userData);
       console.log("Role value:", role);
