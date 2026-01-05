@@ -1,4 +1,5 @@
 using backend.Data;
+using backend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -11,10 +12,21 @@ namespace backend.Controllers
     public class NotificationsController : ControllerBase
     {
         private readonly FlowerMarketDbContext _context;
+        private readonly IExpoPushNotificationService _pushService;
 
-        public NotificationsController(FlowerMarketDbContext context)
+        public NotificationsController(FlowerMarketDbContext context, IExpoPushNotificationService pushService)
         {
             _context = context;
+            _pushService = pushService;
+            Console.WriteLine("✅ [NotificationsController] Constructor - Instantiated");
+        }
+
+        [HttpGet("ping")]
+        [AllowAnonymous]
+        public IActionResult Ping()
+        {
+            Console.WriteLine("✅ [NotificationsController] Ping request received.");
+            return Ok(new { message = "pong", time = DateTime.UtcNow });
         }
 
         protected string? GetUserId()
@@ -23,8 +35,8 @@ namespace backend.Controllers
                 ?? User.FindFirstValue("id")
                 ?? User.FindFirstValue("sub")
                 ?? Request.Headers["X-Firebase-UID"].FirstOrDefault();
-                
-            Console.WriteLine($"[NotificationsController] Detected UserId: {id}");
+
+            Console.WriteLine($"🔍 [GetUserId] Resolved ID: {id ?? "NULL"}");
             return id;
         }
 
@@ -32,103 +44,149 @@ namespace backend.Controllers
         [HttpGet]
         public async Task<IActionResult> GetNotifications()
         {
-            var userId = GetUserId();
-            Console.WriteLine($"[Notifications] GetNotifications called for userId: {userId}");
-
-            if (string.IsNullOrEmpty(userId)) 
+            try
             {
-                 Console.WriteLine("[Notifications] Unauthorized: userId is null or empty");
-                 return Unauthorized();
+                var userId = GetUserId();
+                if (string.IsNullOrEmpty(userId)) return Unauthorized();
+
+                var userRole = User.FindFirstValue(ClaimTypes.Role);
+                var isAdmin = userRole?.ToLower() == "admin";
+
+                var query = _context.Notifications
+                    .Where(n => (n.UserId == userId || (isAdmin && n.Type == "Admin" && n.UserId == null)) && !n.IsRead);
+                    
+                var items = await query
+                    .OrderByDescending(n => n.CreatedAt)
+                    .Select(n => new { n.Id, n.Title, n.Message, n.Type, n.IsRead, n.CreatedAt })
+                    .ToListAsync();
+
+                return Ok(new { data = items });
             }
-
-            // Check if user is admin
-            var userRole = User.FindFirstValue(ClaimTypes.Role);
-            var isAdmin = userRole?.ToLower() == "admin";
-            Console.WriteLine($"[Notifications] User role: {userRole}, IsAdmin: {isAdmin}");
-
-            // Fetch notifications for this user OR admin notifications (only if user is admin)
-            var query = _context.Notifications
-                .Where(n => (n.UserId == userId || (isAdmin && n.Type == "Admin" && n.UserId == null)) && !n.IsRead);
-                
-            var count = await query.CountAsync();
-            Console.WriteLine($"[Notifications] Query found {count} matches.");
-
-            var items = await query
-                .OrderByDescending(n => n.CreatedAt)
-                .Select(n => new
-                {
-                    n.Id,
-                    n.Title,
-                    n.Message,
-                    n.Type,
-                    n.IsRead,
-                    n.CreatedAt
-                })
-                .ToListAsync();
-
-            Console.WriteLine($"[Notifications] Returning {items.Count} unread notifications for {userId}");
-            foreach(var item in items) {
-                Console.WriteLine($" - Notif: {item.Id}, IsRead: {item.IsRead}");
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ [GetNotifications] Error: {ex}");
+                return StatusCode(500, new { error = ex.Message });
             }
-
-            return Ok(new { data = items });
         }
 
-        // GET: api/notifications/unread-count
         [HttpGet("unread-count")]
         public async Task<IActionResult> GetUnreadCount()
         {
-            var userId = GetUserId();
-            if (string.IsNullOrEmpty(userId)) return Unauthorized();
+            try 
+            {
+                var userId = GetUserId();
+                if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-            // Check if user is admin
-            var userRole = User.FindFirstValue(ClaimTypes.Role);
-            var isAdmin = userRole?.ToLower() == "admin";
+                var userRole = User.FindFirstValue(ClaimTypes.Role);
+                var isAdmin = userRole?.ToLower() == "admin";
 
-            var count = await _context.Notifications.CountAsync(n => 
-                (n.UserId == userId || (isAdmin && n.Type == "Admin" && n.UserId == null)) && !n.IsRead);
-            return Ok(new { count });
+                var count = await _context.Notifications.CountAsync(n => 
+                    (n.UserId == userId || (isAdmin && n.Type == "Admin" && n.UserId == null)) && !n.IsRead);
+                return Ok(new { count });
+            }
+            catch (Exception ex)
+            {
+                 Console.WriteLine($"❌ [GetUnreadCount] Error: {ex}");
+                 return Ok(new { count = 0 });
+            }
         }
 
         [HttpPut("{id}/read")]
         public async Task<IActionResult> MarkRead(string id)
         {
-            Console.WriteLine($"[MarkRead] Received ID: '{id}'");
-            
             var userId = GetUserId();
-            Console.WriteLine($"[MarkRead] UserId: '{userId}'");
-            
             if (string.IsNullOrEmpty(userId)) return Unauthorized();
 
-            if (!Guid.TryParse(id, out Guid guidId))
-            {
-                Console.WriteLine($"[MarkRead] Failed to parse ID as GUID. Checking if debug ID...");
-                // If it's the debug ID, just return OK
-                if (id == "debug-1") return Ok(new { success = true });
-                return BadRequest(new { error = "Invalid ID format" });
-            }
+            if (!Guid.TryParse(id, out Guid guidId)) return BadRequest("Invalid ID");
 
-            // Check if user is admin
             var userRole = User.FindFirstValue(ClaimTypes.Role);
             var isAdmin = userRole?.ToLower() == "admin";
 
-            Console.WriteLine($"[MarkRead] Looking for notification with GUID: {guidId}");
             var n = await _context.Notifications.FirstOrDefaultAsync(x => 
                 x.Id == guidId && 
                 (x.UserId == userId || (isAdmin && x.Type == "Admin" && x.UserId == null))
             );
 
-            if (n == null)
-            {
-                Console.WriteLine($"[MarkRead] Notification not found for GUID: {guidId} (UserId mismatch involved?)");
-                return NotFound(new { error = "Notification not found" });
-            }
+            if (n == null) return NotFound();
 
             n.IsRead = true;
             await _context.SaveChangesAsync();
-            Console.WriteLine($"[MarkRead] Successfully marked notification {guidId} as read");
-
             return Ok(new { success = true });
         }
+
+        [HttpPost("register-token")]
+        public async Task<IActionResult> RegisterToken([FromBody] TokenRegistrationRequest request)
+        {
+            Console.WriteLine("📥 [RegisterToken] Request received.");
+            
+            try
+            {
+                if (request == null || string.IsNullOrEmpty(request.Token))
+                {
+                    Console.WriteLine("❌ [RegisterToken] Invalid token.");
+                    return BadRequest("Invalid token");
+                }
+                
+                Console.WriteLine($"📥 [RegisterToken] Token: {request.Token.Substring(0, Math.Min(10, request.Token.Length))}...");
+
+                var userId = GetUserId();
+                if (string.IsNullOrEmpty(userId)) return Unauthorized("User not authenticated");
+
+                var user = await _context.Users.FindAsync(userId);
+                if (user == null) return NotFound($"User {userId} not found");
+
+                // Update token
+                user.ExpoPushToken = request.Token;
+                
+                // SAVE
+                Console.WriteLine($"💾 [RegisterToken] Saving token for {user.Email}");
+                await _context.SaveChangesAsync();
+                
+                // TEST PUSH IMMEDIATELY (Verification Step)
+                _ = Task.Run(async () => {
+                    await Task.Delay(2000); // Wait 2s
+                    Console.WriteLine("🚀 [AutoTest] Sending welcome push...");
+                    await _pushService.SendPushNotificationAsync(
+                        user.ExpoPushToken,
+                        "Notifications Active ✅",
+                        "Vous recevrez désormais les alertes en temps réel."
+                    );
+                });
+
+                return Ok(new { success = true });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"🔥 [RegisterToken] ERROR: {ex}");
+                return StatusCode(500, new { error = ex.Message });
+            }
+        }
+        
+        [HttpPost("test-push")]
+        public async Task<IActionResult> DebugPush()
+        {
+            var userId = GetUserId();
+            if (string.IsNullOrEmpty(userId)) return Unauthorized();
+            
+            var user = await _context.Users.FindAsync(userId);
+            if (user == null) return NotFound();
+            
+            if (string.IsNullOrEmpty(user.ExpoPushToken)) 
+                return BadRequest("No token registered for this user.");
+                
+            Console.WriteLine($"🚀 [DebugPush] Manually triggering push for {user.Email}");
+            var sent = await _pushService.SendPushNotificationAsync(
+                user.ExpoPushToken,
+                "Test de Notification 🔔",
+                "Ceci est un test pour vérifier l'affichage."
+            );
+            
+            return Ok(new { sent });
+        }
+    }
+
+    public class TokenRegistrationRequest
+    {
+        public string Token { get; set; } = string.Empty;
     }
 }
